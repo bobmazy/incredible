@@ -93,3 +93,32 @@ func TestSecretSourceTimesOut(t *testing.T) {
 	})
 	requireTimeout(t, err, "az keyvault secret")
 }
+
+func TestSecretSourceChecksExitStatus(t *testing.T) {
+	const output = `{"value": "secret"}`
+	tests := []struct {
+		name     string
+		exitCode int
+		want     string
+		wantErr  bool
+	}{
+		{name: "success", exitCode: 0, want: "secret"},
+		// az has printed the secret, but failed afterwards.
+		{name: "failure", exitCode: 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := initFakeAz(t, rule(fakecli.Behavior{Stdout: output, ExitCode: tt.exitCode}, "keyvault", "secret", "show"))
+			ctx := context.Background()
+			src, err := p.Open(ctx, &specs.Source{AzureKeyVaultSecret: &azure.KeyVaultSecretSource{ItemId: "secret-id"}})
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+
+			got, err := src.(source.ValueSource).Get(ctx)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Errorf("Get = %q, %v, want %q, error: %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}

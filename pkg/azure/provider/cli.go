@@ -21,7 +21,9 @@ func (c CliClient) login() error {
 }
 
 func (c CliClient) readSecretById(id string) (*Secret, error) {
-	reader, err := c.Cli.RunRedirectStdout(
+	// Waits for az to exit, so it isn't killed while still running, and its
+	// exit status is checked.
+	output, err := c.Cli.RunReadStdout(
 		"keyvault",
 		"secret",
 		"show",
@@ -31,10 +33,9 @@ func (c CliClient) readSecretById(id string) (*Secret, error) {
 	if err != nil {
 		return nil, err
 	}
-	dec := json.NewDecoder(reader)
 	var secret Secret
-	if err = dec.Decode(&secret); err != nil {
+	if err = json.Unmarshal([]byte(output), &secret); err != nil {
 		return nil, err
 	}
-	return &secret, err
+	return &secret, nil
 }
