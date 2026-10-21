@@ -12,8 +12,9 @@ type CliClient struct {
 func (c CliClient) login() error {
 	// Check if we are logged in
 	_, err := c.Cli.RunReadStdout("account", "list")
-	if err == nil {
-		return nil
+	loggedIn, err := cli.Succeeded(err)
+	if err != nil || loggedIn {
+		return err
 	}
 	return c.Cli.RunInheritStreams("login")
 }

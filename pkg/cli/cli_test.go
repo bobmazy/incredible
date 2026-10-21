@@ -118,3 +118,25 @@ func TestCancelKillsCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestSucceeded(t *testing.T) {
+	exitErr := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{ExitCode: 1}}).RunInheritStreams()
+	tests := []struct {
+		name    string
+		err     error
+		want    bool
+		wantErr error
+	}{
+		{name: "exit status zero", err: nil, want: true},
+		{name: "non-zero exit status", err: exitErr, want: false},
+		{name: "cancelled", err: context.Canceled, want: false, wantErr: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cli.Succeeded(tt.err)
+			if got != tt.want || err != tt.wantErr {
+				t.Errorf("Succeeded(%v) = %v, %v, want %v, %v", tt.err, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}

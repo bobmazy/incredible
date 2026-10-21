@@ -22,6 +22,17 @@ type Cli struct {
 	AdditionalEnvs []string
 }
 
+// Succeeded reports whether a command that returned err exited with status
+// zero. A non-zero exit status yields false and no error. Any other error,
+// e.g. a cancellation, is returned.
+func Succeeded(err error) (bool, error) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (c Cli) WithEnv(name string, value string) Cli {
 	return Cli{
 		Executable:     c.Executable,
