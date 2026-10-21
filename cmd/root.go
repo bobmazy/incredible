@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"os"
 	exec2 "os/exec"
+	"time"
 )
 
 var debug bool
@@ -47,6 +48,10 @@ A common way to provide access tokens, passwords, certificates
 and other secrets, is by using an environment variable holding the required
 secret itself or pointing to a file containing it.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if executionOptions.ProviderTimeout < 0 {
+			return fmt.Errorf("--provider-timeout must not be negative, got %s", executionOptions.ProviderTimeout)
+		}
+
 		var logger *zap.Logger
 		var err error
 		if debug {
@@ -137,4 +142,5 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "If present, debug output is enabled.")
 	rootCmd.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "If present, interactive mode is disabled.")
+	rootCmd.PersistentFlags().DurationVar(&executionOptions.ProviderTimeout, "provider-timeout", 2*time.Minute, "Maximum duration of non-interactive provider CLI calls (0 disables the timeout).")
 }

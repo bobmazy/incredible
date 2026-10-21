@@ -206,6 +206,22 @@ func Install(t testing.TB, name string, spec Spec) {
 	t.Setenv(specEnv, encode(t, spec))
 }
 
+// Timeout returns a timeout for code that runs the fake installed as name a
+// few times: at least a second, or five times as long as the fake took to start
+// and exit. Starting can be slow, e.g. due to virus scanning on Windows or the
+// race detector.
+func Timeout(t testing.TB, name string) time.Duration {
+	t.Helper()
+	cmd := exec.Command(name)
+	// Override the installed spec, so the fake exits right away.
+	cmd.Env = append(os.Environ(), specEnv+"={}")
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("fakecli: running %s: %v", name, err)
+	}
+	return max(time.Second, 5*time.Since(start))
+}
+
 // Await runs fn and returns its error. It fails the test if fn doesn't return
 // within 30 seconds, e.g. because a hanging fake hasn't been killed.
 func Await(t testing.TB, fn func() error) error {

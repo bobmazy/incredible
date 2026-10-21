@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +104,22 @@ func TestRunReadStdoutIgnoresLeftOverProcess(t *testing.T) {
 	}
 }
 
+func TestTimeoutDoesNotWaitForLeftOverProcess(t *testing.T) {
+	cli.SetWaitDelay(t, 100*time.Millisecond)
+	c := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{LeaveChild: 3 * time.Second, Hang: true}})
+	c.Timeout = 200 * time.Millisecond
+
+	start := time.Now()
+	_, err := c.RunReadStdout("get", "item")
+	var timeoutErr *cli.TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("err = %v, want *cli.TimeoutError", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+		t.Errorf("took %v, the left over process has been waited for", elapsed)
+	}
+}
+
 func TestCancelKillsCommand(t *testing.T) {
 	for name, run := range runners {
 		t.Run(name, func(t *testing.T) {
@@ -119,8 +137,55 @@ func TestCancelKillsCommand(t *testing.T) {
 	}
 }
 
+func TestTimeoutKillsCommand(t *testing.T) {
+	for name, run := range runners {
+		t.Run(name, func(t *testing.T) {
+			c := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{Hang: true}})
+			c.Timeout = 200 * time.Millisecond
+
+			err := fakecli.Await(t, func() error { return run(c, "get", "item", "item-id", "--raw") })
+			var timeoutErr *cli.TimeoutError
+			if !errors.As(err, &timeoutErr) {
+				t.Fatalf("err = %v, want *cli.TimeoutError", err)
+			}
+			if want := filepath.Base(c.Executable) + " get item"; timeoutErr.Command != want {
+				t.Errorf("Command = %q, want %q", timeoutErr.Command, want)
+			}
+			if strings.Contains(err.Error(), "item-id") {
+				t.Errorf("error %q contains a later argument", err)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+			}
+		})
+	}
+}
+
+func TestWithEnvKeepsTimeout(t *testing.T) {
+	c := cli.Cli{Timeout: time.Minute}.WithEnv("NAME", "value")
+	if c.Timeout != time.Minute {
+		t.Errorf("Timeout = %v, want %v", c.Timeout, time.Minute)
+	}
+}
+
+func TestWithoutTimeoutDoesNotKillCommand(t *testing.T) {
+	c := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{Hang: true}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Ctx = ctx
+	c.Timeout = 100 * time.Millisecond
+	// Cancel well after the timeout would have killed the command.
+	time.AfterFunc(time.Second, cancel)
+
+	err := fakecli.Await(t, func() error { return c.WithoutTimeout().RunInheritStreams("login") })
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
 func TestSucceeded(t *testing.T) {
 	exitErr := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{ExitCode: 1}}).RunInheritStreams()
+	timeoutErr := &cli.TimeoutError{Command: "bw login --check", Timeout: time.Minute}
 	tests := []struct {
 		name    string
 		err     error
@@ -130,6 +195,7 @@ func TestSucceeded(t *testing.T) {
 		{name: "exit status zero", err: nil, want: true},
 		{name: "non-zero exit status", err: exitErr, want: false},
 		{name: "cancelled", err: context.Canceled, want: false, wantErr: context.Canceled},
+		{name: "timeout", err: timeoutErr, want: false, wantErr: timeoutErr},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

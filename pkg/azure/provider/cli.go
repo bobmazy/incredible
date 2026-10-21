@@ -16,7 +16,8 @@ func (c CliClient) login() error {
 	if err != nil || loggedIn {
 		return err
 	}
-	return c.Cli.RunInheritStreams("login")
+	// Opens a browser or device code flow, so no timeout.
+	return c.Cli.WithoutTimeout().RunInheritStreams("login")
 }
 
 func (c CliClient) readSecretById(id string) (*Secret, error) {

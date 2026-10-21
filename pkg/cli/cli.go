@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,11 +22,30 @@ type Cli struct {
 	Executable     string
 	Ctx            context.Context
 	AdditionalEnvs []string
+	// Timeout bounds the runtime of each command. Zero means no timeout.
+	Timeout time.Duration
+}
+
+// TimeoutError is returned when a command has been killed because its
+// Cli.Timeout elapsed.
+type TimeoutError struct {
+	// Command is the executable followed by at most two leading arguments,
+	// e.g. "bw get item". Later arguments, like IDs, are left out.
+	Command string
+	Timeout time.Duration
+}
+
+func (e *TimeoutError) Error() string {
+	return fmt.Sprintf("%s timed out after %s", e.Command, e.Timeout)
+}
+
+func (e *TimeoutError) Unwrap() error {
+	return context.DeadlineExceeded
 }
 
 // Succeeded reports whether a command that returned err exited with status
 // zero. A non-zero exit status yields false and no error. Any other error,
-// e.g. a cancellation, is returned.
+// e.g. a TimeoutError, is returned.
 func Succeeded(err error) (bool, error) {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -38,16 +59,31 @@ func (c Cli) WithEnv(name string, value string) Cli {
 		Executable:     c.Executable,
 		Ctx:            c.Ctx,
 		AdditionalEnvs: append(c.AdditionalEnvs, fmt.Sprintf("%s=%s", name, value)),
+		Timeout:        c.Timeout,
 	}
 }
 
+// WithoutTimeout returns a copy of c without a timeout. Use it for commands
+// waiting for user input, like logins.
+func (c Cli) WithoutTimeout() Cli {
+	c.Timeout = 0
+	return c
+}
+
 // newCommand returns the command and a function that must be called with the
-// result of running it. That function replaces the error with the cause if
-// the context is done.
+// result of running it. That function releases the command's context and
+// replaces the error with the cause if the context is done.
 func (c Cli) newCommand(args ...string) (*exec.Cmd, func(error) error) {
 	ctx := c.Ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	cancel := context.CancelFunc(func() {})
+	if c.Timeout > 0 {
+		ctx, cancel = context.WithTimeoutCause(ctx, c.Timeout, &TimeoutError{
+			Command: commandName(c.Executable, args),
+			Timeout: c.Timeout,
+		})
 	}
 
 	cmd := exec.CommandContext(ctx, c.Executable, args...)
@@ -59,12 +95,18 @@ func (c Cli) newCommand(args ...string) (*exec.Cmd, func(error) error) {
 	}
 
 	finish := func(err error) error {
+		defer cancel()
 		if err != nil && ctx.Err() != nil {
 			return context.Cause(ctx)
 		}
 		return err
 	}
 	return cmd, finish
+}
+
+func commandName(executable string, args []string) string {
+	parts := append([]string{filepath.Base(executable)}, args[:min(len(args), 2)]...)
+	return strings.Join(parts, " ")
 }
 
 func (c Cli) RunInheritStreams(args ...string) error {

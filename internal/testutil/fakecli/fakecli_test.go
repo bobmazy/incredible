@@ -150,3 +150,13 @@ func TestInstallPutsFakeOnPath(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 }
+
+func TestTimeoutIsAtLeastASecond(t *testing.T) {
+	const name = "incredible-fakecli-test"
+	fakecli.Install(t, name, fakecli.Spec{Default: fakecli.Behavior{Hang: true}})
+
+	// The installed spec hangs, so this also checks that it is overridden.
+	if got := fakecli.Timeout(t, name); got < time.Second {
+		t.Errorf("Timeout = %v, want at least 1s", got)
+	}
+}
