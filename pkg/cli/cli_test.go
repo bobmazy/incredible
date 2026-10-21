@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/masinger/incredible/internal/testutil/fakecli"
 	"github.com/masinger/incredible/pkg/cli"
@@ -20,12 +21,30 @@ func TestMain(m *testing.M) {
 func fakeCli(t *testing.T, spec fakecli.Spec) cli.Cli {
 	t.Helper()
 	path, env := fakecli.Executable(t, spec)
+	// Ctx is left nil, which must work as well.
 	return cli.Cli{
-		// Set explicitly: newCommand passes a nil Ctx to exec.CommandContext.
-		Ctx:            context.Background(),
 		Executable:     path,
 		AdditionalEnvs: env,
 	}
+}
+
+// runners run a command with each of the Run methods.
+var runners = map[string]func(c cli.Cli, args ...string) error{
+	"RunInheritStreams": func(c cli.Cli, args ...string) error {
+		return c.RunInheritStreams(args...)
+	},
+	"RunReadStdout": func(c cli.Cli, args ...string) error {
+		_, err := c.RunReadStdout(args...)
+		return err
+	},
+	"RunRedirectStdout": func(c cli.Cli, args ...string) error {
+		reader, err := c.RunRedirectStdout(args...)
+		if err != nil {
+			return err
+		}
+		_, err = io.ReadAll(reader)
+		return err
+	},
 }
 
 func TestRunReadStdoutReturnsOutput(t *testing.T) {
@@ -67,5 +86,35 @@ func TestRunRedirectStdoutStreamsAllOutput(t *testing.T) {
 	}
 	if len(out) != size {
 		t.Errorf("read %d bytes, want %d", len(out), size)
+	}
+}
+
+func TestRunReadStdoutIgnoresLeftOverProcess(t *testing.T) {
+	cli.SetWaitDelay(t, 100*time.Millisecond)
+	c := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{Stdout: "hello", LeaveChild: 2 * time.Second}})
+
+	out, err := c.RunReadStdout("account", "list")
+	if err != nil {
+		t.Fatalf("RunReadStdout: %v", err)
+	}
+	if out != "hello" {
+		t.Errorf("output = %q, want %q", out, "hello")
+	}
+}
+
+func TestCancelKillsCommand(t *testing.T) {
+	for name, run := range runners {
+		t.Run(name, func(t *testing.T) {
+			c := fakeCli(t, fakecli.Spec{Default: fakecli.Behavior{Hang: true}})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			c.Ctx = ctx
+			time.AfterFunc(200*time.Millisecond, cancel)
+
+			err := fakecli.Await(t, func() error { return run(c, "get", "item") })
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("err = %v, want context.Canceled", err)
+			}
+		})
 	}
 }

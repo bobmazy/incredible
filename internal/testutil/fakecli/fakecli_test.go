@@ -112,6 +112,27 @@ func TestHangUntilKilled(t *testing.T) {
 	}
 }
 
+func TestLeaveChildKeepsStdoutOpen(t *testing.T) {
+	const sleep = 500 * time.Millisecond
+	spec := fakecli.Spec{Default: fakecli.Behavior{Stdout: "out", LeaveChild: sleep}}
+
+	start := time.Now()
+	got := runFake(t, command(t, context.Background(), spec), "")
+	if got != (result{stdout: "out"}) {
+		t.Errorf("got %+v", got)
+	}
+	if elapsed := time.Since(start); elapsed < sleep {
+		t.Errorf("stdout was closed after %v, before the child exited", elapsed)
+	}
+}
+
+func TestAwaitReturnsError(t *testing.T) {
+	want := errors.New("done")
+	if got := fakecli.Await(t, func() error { return want }); got != want {
+		t.Errorf("Await = %v, want %v", got, want)
+	}
+}
+
 func TestInstallPutsFakeOnPath(t *testing.T) {
 	const name = "incredible-fakecli-test"
 	fakecli.Install(t, name, fakecli.Spec{

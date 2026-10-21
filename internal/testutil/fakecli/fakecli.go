@@ -31,7 +31,9 @@
 //
 // Install changes the process environment, so tests using it must not call
 // t.Parallel. A fake that hangs must be killed and waited for before the test
-// ends; on Windows its executable can't be removed while it is running.
+// ends; on Windows its executable can't be removed while it is running. Run
+// code that should kill a hanging fake through Await, so the test fails fast
+// if it doesn't.
 package fakecli
 
 import (
@@ -41,6 +43,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -52,6 +55,10 @@ const specEnv = "INCREDIBLE_FAKECLI_SPEC"
 
 const hangDuration = 10 * time.Minute
 
+// awaitTimeout is how long Await waits. It is far shorter than hangDuration and
+// the default timeout of go test.
+const awaitTimeout = 30 * time.Second
+
 // Behavior describes what the fake does. The steps run in field order.
 type Behavior struct {
 	// EchoStdin copies stdin to stdout until EOF.
@@ -62,6 +69,12 @@ type Behavior struct {
 	// StdoutBytes is the number of additional bytes ('x') written to stdout.
 	StdoutBytes int    `json:",omitempty"`
 	Stderr      string `json:",omitempty"`
+	// LeaveChild starts a copy of the fake that inherits stdout, sleeps for
+	// this duration and isn't waited for. It acts like a wrapper script that
+	// leaves a process behind. Don't combine it with Install on Windows: the
+	// test's temp dir can't be removed while the child runs.
+	LeaveChild time.Duration `json:",omitempty"`
+	Sleep      time.Duration `json:",omitempty"`
 	// Hang blocks until the process is killed (at most 10 minutes).
 	Hang     bool `json:",omitempty"`
 	ExitCode int  `json:",omitempty"`
@@ -113,10 +126,32 @@ func run(b Behavior) int {
 		fmt.Fprintf(os.Stderr, "fakecli: %v\n", err)
 		return 126
 	}
+	if b.LeaveChild > 0 {
+		if err := leaveChild(b.LeaveChild); err != nil {
+			fmt.Fprintf(os.Stderr, "fakecli: %v\n", err)
+			return 126
+		}
+	}
+	time.Sleep(b.Sleep)
 	if b.Hang {
 		time.Sleep(hangDuration)
 	}
 	return b.ExitCode
+}
+
+func leaveChild(sleep time.Duration) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(Spec{Default: Behavior{Sleep: sleep}})
+	if err != nil {
+		return err
+	}
+	child := exec.Command(self)
+	child.Env = append(os.Environ(), specEnv+"="+string(encoded))
+	child.Stdout = os.Stdout
+	return child.Start()
 }
 
 func write(b Behavior) error {
@@ -169,6 +204,23 @@ func Install(t testing.TB, name string, spec Spec) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(specEnv, encode(t, spec))
+}
+
+// Await runs fn and returns its error. It fails the test if fn doesn't return
+// within 30 seconds, e.g. because a hanging fake hasn't been killed.
+func Await(t testing.TB, fn func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		done <- fn()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(awaitTimeout):
+		t.Fatalf("fakecli: still running after %v", awaitTimeout)
+		return nil
+	}
 }
 
 func requireDispatch(t testing.TB) {
